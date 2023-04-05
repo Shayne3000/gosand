@@ -6,13 +6,16 @@ package main
 
 // We won't use and populate a DB to persist the products for now. We'll use a slice to store products in memory.
 
-// when you allocate an instance of product handler to a variable, that variable can change the original values of the fields in the producthandler
+// When you assign an instance of product handler to a variable, that variable can change the original values of the fields in the producthandler if the receiver is a pointer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -22,8 +25,8 @@ type Product struct {
 	Price float64 `json:"price"`
 }
 
-// Slice that holds Products in memory a la slice of Products
-type Products []Product
+// Slice that holds Products in memory i.e. a slice of Products aliased as the type "Products"
+type Products []Product //type aliasing
 
 // Implements the handler interface and handles requests to the products API endpoint and all the routing for products.
 // struct that has a slice, products of type Products which holds Product structs
@@ -31,8 +34,8 @@ type productHandler struct {
 	// A lock that allows one to lock access to the productHandler's critical section i.e. product slice when a request is interacting with the handler
 	// to prevent a race condition where one request modifies the product slice before another can read from it causing inconsistency. A scenario
 	// which could occur when requests access the products slice concurrently or in parallel as each request to the http server spins up a new goroutine.
-	sync.Mutex
-	products Products
+	sync.Mutex // locks access to the product slice per request to modify it separately and unlock it so other requests can access it when it's done.
+	products   Products
 }
 
 // ServeHTTP is defined on a pointer to the productHandler and as such productHandler now implements the handler interface.
@@ -56,7 +59,7 @@ func (ph *productHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func main() {
 	port := ":8081"
 
-	// allocate an instance of a pointer to productHandler to pHanlder
+	// assign an instance of a pointer to productHandler to pHanlder
 	pHandler := &productHandler{
 		// Product slice literal
 		products: Products{
@@ -66,9 +69,9 @@ func main() {
 		},
 	}
 
-	// registers a variable, pHandler whose type, productHandler implements the handler interface as the handler for the /products route
-	http.Handle("/products", pHandler)
-	http.Handle("/products/", pHandler)
+	// registers a variable, pHandler (whose type, *productHandler implements the handler interface) as the handler for the /products route
+	http.Handle("/products", pHandler)  // for all products
+	http.Handle("/products/", pHandler) // for specific product resources with an id
 
 	// registered an inlined anonymous function that as the handler for the root path "/"
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -89,11 +92,25 @@ func (ph *productHandler) get(w http.ResponseWriter, r *http.Request) {
 	// concurrency handling
 	// Unlock access to the Product slice when get is done using the mutex
 	defer ph.Unlock()
-	// Lock access to the Product slice such that only this GET request can interact with the Product slice at this time.
+	// Lock access to the Product slice such that only this GET request can interact with the Product slice at this time until it's done with reading from it.
 	ph.Lock()
 
-	// return the products list
-	returnJSONResponse(w, http.StatusOK, ph.products)
+	id, err := getIdFromRequest(r)
+
+	if err != nil {
+		// return all products if there's an error in getting the id.
+		returnJSONResponse(w, http.StatusOK, ph.products)
+		return
+	}
+
+	// if id is less than 0 or greater than the size of the products slice
+	if id < 0 || id >= len(ph.products) {
+		returnErrorResponse(w, http.StatusNotFound, "Product Id doesn't exist.")
+		return
+	}
+
+	// return the specific product given an id.
+	returnJSONResponse(w, http.StatusOK, ph.products[id])
 }
 
 func (ph *productHandler) put(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +121,7 @@ func (ph *productHandler) delete(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Delete!")
 }
 
-// The type of the data argument can be any type and so to represent that, we use the interface{}. In kotlin this would be <Any>
+// The type of the data argument can be any type and so to represent that, we use an empty interface{} type. In kotlin this would be <Any>
 func returnJSONResponse(w http.ResponseWriter, code int, data interface{}) {
 	response, err := json.Marshal(data)
 
@@ -122,4 +139,24 @@ func returnJSONResponse(w http.ResponseWriter, code int, data interface{}) {
 
 func returnErrorResponse(w http.ResponseWriter, code int, msg string) {
 	returnJSONResponse(w, code, map[string]string{"error": msg})
+}
+
+func getIdFromRequest(r *http.Request) (int, error) {
+	// The url should be split into 3 slices, one for the base domain i.e. localhost, then the resource i.e. products and finally one for the id itself.
+	urlParts := strings.Split(r.URL.String(), "/")
+	partsLength := len(urlParts)
+
+	// sanity test to ensure that the url string is not malformed and is what we expect i.e. does not have more than 3 parts.
+	if partsLength != 3 {
+		return 0, errors.New("id or resource not found")
+	}
+
+	// convert the string to int
+	id, err := strconv.Atoi(urlParts[partsLength-1])
+
+	if err != nil {
+		return 0, errors.New("malformed id")
+	}
+
+	return id, nil
 }
