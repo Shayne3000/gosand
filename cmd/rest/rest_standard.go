@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -26,7 +27,7 @@ type Product struct {
 }
 
 // Slice that holds Products in memory i.e. a slice of Products aliased as the type "Products"
-type Products []Product //type aliasing
+type Products []Product // type aliasing
 
 // Implements the handler interface and handles requests to the products API endpoint and all the routing for products.
 // struct that has a slice, products of type Products which holds Product structs
@@ -81,9 +82,47 @@ func main() {
 	log.Fatal(http.ListenAndServe(port, nil))
 }
 
-// define http methods on a pointer to the productHandler and as such an instance of a pointer to the productHandler or a pointer receiver can call post
+// Define http methods on the pointer type *productHandler and as such a pointer receiver can call post
+
+// handles POST on /products for the handler implementation, *productHandler
 func (ph *productHandler) post(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Post!")
+	// It's a good practice to close the body of the request after reading from it.
+	defer r.Body.Close()
+
+	// Read the body of the request to get the json data
+	body, err := io.ReadAll(r.Body)
+
+	if err != nil {
+		returnErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Verify that the request body is in the JSON format.
+	contentType := r.Header.Get("content-type")
+
+	if contentType != "application/json" {
+		returnErrorResponse(w, http.StatusUnsupportedMediaType, "Content type should be application/json.")
+		return
+	}
+
+	// Unmarshal the body (in json) into a product struct i.e. the data type or model.
+	var product Product
+
+	err = json.Unmarshal(body, &product)
+
+	if err != nil {
+		returnErrorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	defer ph.Unlock()
+
+	ph.Lock()
+
+	// persist the product data via appending into an in-memory storage i.e. slice or alternatively insert it into DB table.
+	ph.products = append(ph.products, product)
+
+	returnJSONResponse(w, http.StatusCreated, product)
 }
 
 // method defined on productHandler that handles GET requests for the related Url pattern
@@ -95,7 +134,7 @@ func (ph *productHandler) get(w http.ResponseWriter, r *http.Request) {
 	// Lock access to the Product slice such that only this GET request can interact with the Product slice at this time until it's done with reading from it.
 	ph.Lock()
 
-	id, err := getIdFromRequest(r)
+	id, err := getIdFromRequestPath(r)
 
 	if err != nil {
 		// return all products if there's an error in getting the id.
@@ -103,7 +142,7 @@ func (ph *productHandler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// if id is less than 0 or greater than the size of the products slice
+	// Verify that there is an element at the given id in the slice.
 	if id < 0 || id >= len(ph.products) {
 		returnErrorResponse(w, http.StatusNotFound, "Product Id doesn't exist.")
 		return
@@ -113,10 +152,65 @@ func (ph *productHandler) get(w http.ResponseWriter, r *http.Request) {
 	returnJSONResponse(w, http.StatusOK, ph.products[id])
 }
 
+// handles PUT on /products/{id} for the handler implementation, *productHandler
 func (ph *productHandler) put(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Put!")
+	defer r.Body.Close()
+
+	// get id of the currently stored entry to update from the url
+	id, err := getIdFromRequestPath(r)
+
+	if err != nil {
+		returnErrorResponse(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// get item from the request body that would replace the currently stored entry
+	body, err := io.ReadAll(r.Body)
+
+	if err != nil {
+		returnErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	contentType := r.Header.Get("content-type")
+
+	if contentType != "application/json" {
+		returnErrorResponse(w, http.StatusUnsupportedMediaType, "Content type should be application/json.")
+		return
+	}
+
+	var product Product
+
+	err = json.Unmarshal(body, &product)
+
+	if err != nil {
+		returnErrorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	defer ph.Unlock()
+	ph.Lock()
+
+	// check the id exists in the slice
+	if id < 0 || id >= len(ph.products) {
+		returnErrorResponse(w, http.StatusNotFound, "Product Id doesn't exist.")
+		return
+	}
+
+	// Verify that the product model's values are not empty and update the values of the entry at the given id
+	if product.Name != "" {
+		ph.products[id].Name = product.Name
+	}
+
+	// Checking separately in this manner allows one to update either one of the literals in the model per time.
+	if product.Price != 0.0 {
+		ph.products[id].Price = product.Price
+	}
+
+	returnJSONResponse(w, http.StatusOK, ph.products[id])
 }
 
+// handles DELETE on /products/{id} for the handler implementation, *productHandler
 func (ph *productHandler) delete(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Delete!")
 }
@@ -141,7 +235,7 @@ func returnErrorResponse(w http.ResponseWriter, code int, msg string) {
 	returnJSONResponse(w, code, map[string]string{"error": msg})
 }
 
-func getIdFromRequest(r *http.Request) (int, error) {
+func getIdFromRequestPath(r *http.Request) (int, error) {
 	// The url should be split into 3 slices, one for the base domain i.e. localhost, then the resource i.e. products and finally one for the id itself.
 	urlParts := strings.Split(r.URL.String(), "/")
 	partsLength := len(urlParts)
