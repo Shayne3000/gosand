@@ -1,12 +1,18 @@
 package main
 
-// Build a REST API using only the standard library and no 3rd party routing libraries/dependencies.
-
-// The REST API will regulate access to the Product resource. We'll create a Product Handler to handle the routing for the product REST API endpoints.
-
-// We won't use and populate a DB to persist the products for now. We'll use a slice to store products in memory.
-
-// When you assign an instance of product handler to a variable, that variable can change the original values of the fields in the producthandler if the receiver is a pointer
+/*
+ *  Build a REST API using only the standard library and no 3rd party routing libraries/dependencies.
+ *	The REST API will regulate access to the Product resource. We'll create a Product Handler to handle the routing for the product REST API endpoints.
+ *	We won't use and populate a DB to persist the products for now. We'll use a slice to store products in memory.
+ *	When you assign an instance of product handler to a variable, that variable can change the original values of
+ *	the fields in the producthandler if the receiver is a pointer.
+ *
+ * 	API Testing with curl
+ *	POST: curl --header "Content-Type: application/json" --request POST --data '{"name":"tea", "price": 35.10}' localhost:8081/products
+ *	GET: curl localhost:8081/products or curl localhost:8081/products/
+ *	PUT: curl --header "Content-Type: application/json" --request PUT --data '{"price": 20}' localhost:8081/products/2
+ *	DELETE: curl --request DELETE localhost:8081/products/1
+ */
 
 import (
 	"encoding/json"
@@ -143,7 +149,7 @@ func (ph *productHandler) get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify that there is an element at the given id in the slice.
-	if id < 0 || id >= len(ph.products) {
+	if idDoesNotExistInSlice(id, ph.products) {
 		returnErrorResponse(w, http.StatusNotFound, "Product Id doesn't exist.")
 		return
 	}
@@ -152,20 +158,20 @@ func (ph *productHandler) get(w http.ResponseWriter, r *http.Request) {
 	returnJSONResponse(w, http.StatusOK, ph.products[id])
 }
 
-// handles PUT on /products/{id} for the handler implementation, *productHandler
+// method for handling PUT requests on /products/{id} for the handler interface implementation, *productHandler
 func (ph *productHandler) put(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
-	// get id of the currently stored entry to update from the url
-	id, err := getIdFromRequestPath(r)
+	// get productId of the product to be modified from the url
+	productId, err := getIdFromRequestPath(r)
 
 	if err != nil {
 		returnErrorResponse(w, http.StatusNotFound, err.Error())
 		return
 	}
 
-	// get item from the request body that would replace the currently stored entry
-	body, err := io.ReadAll(r.Body)
+	// get the JSON body from the request body that would replace the currently stored product entry
+	jsonBody, err := io.ReadAll(r.Body)
 
 	if err != nil {
 		returnErrorResponse(w, http.StatusInternalServerError, err.Error())
@@ -181,7 +187,7 @@ func (ph *productHandler) put(w http.ResponseWriter, r *http.Request) {
 
 	var product Product
 
-	err = json.Unmarshal(body, &product)
+	err = json.Unmarshal(jsonBody, &product)
 
 	if err != nil {
 		returnErrorResponse(w, http.StatusBadRequest, err.Error())
@@ -191,28 +197,56 @@ func (ph *productHandler) put(w http.ResponseWriter, r *http.Request) {
 	defer ph.Unlock()
 	ph.Lock()
 
-	// check the id exists in the slice
-	if id < 0 || id >= len(ph.products) {
+	// check if the id exists in the slice
+	if idDoesNotExistInSlice(productId, ph.products) {
 		returnErrorResponse(w, http.StatusNotFound, "Product Id doesn't exist.")
 		return
 	}
 
-	// Verify that the product model's values are not empty and update the values of the entry at the given id
+	// Verify that the unmarshalled product model's values are not empty
 	if product.Name != "" {
-		ph.products[id].Name = product.Name
+		// update the product in the slice at the given id
+		ph.products[productId].Name = product.Name
 	}
 
 	// Checking separately in this manner allows one to update either one of the literals in the model per time.
 	if product.Price != 0.0 {
-		ph.products[id].Price = product.Price
+		ph.products[productId].Price = product.Price
 	}
 
-	returnJSONResponse(w, http.StatusOK, ph.products[id])
+	returnJSONResponse(w, http.StatusOK, ph.products[productId])
 }
 
 // handles DELETE on /products/{id} for the handler implementation, *productHandler
 func (ph *productHandler) delete(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Delete!")
+	// Get the id of the product to be deleted
+	productId, err := getIdFromRequestPath(r)
+
+	if err != nil {
+		returnErrorResponse(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	defer ph.Unlock()
+	ph.Lock()
+
+	if idDoesNotExistInSlice(productId, ph.products) {
+		returnErrorResponse(w, http.StatusNotFound, "Product Id doesn't exist.")
+		return
+	}
+
+	lastIndex := len(ph.products) - 1
+
+	// Check if the given id is not the index of last item in the slice and if so, swap with last item and trim off the last item.
+	// else if it is, delete the last item directly.
+	if productId < lastIndex {
+		// you can return multiple values from a statement in Go at the same time. Simlar to Kotlin's destructured declaration.
+		ph.products[lastIndex], ph.products[productId] = ph.products[productId], ph.products[lastIndex]
+	}
+
+	ph.products = ph.products[:lastIndex]
+
+	returnJSONResponse(w, http.StatusOK, "Deleted.")
 }
 
 // The type of the data argument can be any type and so to represent that, we use an empty interface{} type. In kotlin this would be <Any>
@@ -233,6 +267,11 @@ func returnJSONResponse(w http.ResponseWriter, code int, data interface{}) {
 
 func returnErrorResponse(w http.ResponseWriter, code int, msg string) {
 	returnJSONResponse(w, code, map[string]string{"error": msg})
+}
+
+// Sanity check to verify that the id exists in the Product slice
+func idDoesNotExistInSlice(productId int, products Products) bool {
+	return productId < 0 || productId >= len(products)
 }
 
 func getIdFromRequestPath(r *http.Request) (int, error) {
